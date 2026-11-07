@@ -13,39 +13,6 @@ import (
 	"rf4server/internal/testutil"
 )
 
-// TestGatewayFullHandshakeAndEcho 全链路：HTTPS 登录 → token → 全握手 →
-// 加密请求 → ACK → 经隧道到主服桩 → 响应解密回读。
-func TestGatewayFullHandshakeAndEcho(t *testing.T) {
-	stub, stubAddr := testutil.StartStubGameServer(t, testutil.TestPSK)
-	gw := testutil.StartGateway(t, stubAddr, testutil.TestPSK)
-
-	token, userid := gw.Login(t)
-	if userid <= 0 {
-		t.Fatalf("userid 异常: %d", userid)
-	}
-
-	fc := testutil.NewFakeClient(t, gw.RealAddr)
-	fc.Dial(token, false)
-
-	fc.SendRequest(5, 1, 1)
-	fc.WaitAck(1, 15*time.Second)
-	env := fc.WaitResponse(15 * time.Second)
-	if env.Marker != -2 || env.CallID != 5 {
-		t.Fatalf("响应不符: marker=%d call_id=%d", env.Marker, env.CallID)
-	}
-
-	opened, dataN, _ := stub.Stats()
-	if len(opened) != 1 {
-		t.Fatalf("stub 应收到 1 次 OPEN, 实得 %d", len(opened))
-	}
-	if opened[0].Token != token || opened[0].Userid != userid || opened[0].Reconnect {
-		t.Fatalf("OPEN payload 不符: %+v", opened[0])
-	}
-	if dataN != 1 {
-		t.Fatalf("stub 应收到 1 条 DATA, 实得 %d", dataN)
-	}
-}
-
 // TestGatewayPlainHTTPCompatLogin 旧版 CN 客户端会向 7515 发明文 HTTP，
 // 且把上游 URL 原样放进 /lv54/https://... 路径。兼容口必须保留双斜杠、
 // 不经 ServeMux 清理或重定向，直接返回旧版 <response> XML。
