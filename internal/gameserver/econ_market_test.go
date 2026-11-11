@@ -324,15 +324,15 @@ func TestFishMarketFlow(t *testing.T) {
 	}
 }
 
-// TestMarketPricingModel 验证新鲜度、腐败和鱼市计价。
+// TestMarketPricingModel 验证新鲜度、腐败判据和官服鱼市计价。
+// 价格断言用当前价格表自身反推期望值，价格数据更新后无需改测试。
 func TestMarketPricingModel(t *testing.T) {
-	t.Parallel()
 	now := float64(time.Now().Unix())
 	// 新鲜度阶梯（FRESHNESS_TIERS）
 	cases := []struct {
 		ageH float64
 		want float64
-	}{
+	}{{
 		{0, 1.0}, {23, 1.0}, {24, 1.0}, {25, 0.8}, {48, 0.8}, {49, 0.6}, {72, 0.6}, {73, 0.4}, {1000, 0.4},
 	}
 	for _, c := range cases {
@@ -347,19 +347,48 @@ func TestMarketPricingModel(t *testing.T) {
 	if !isFishRotten(now-86401, now) {
 		t.Error("86401s 应判腐败")
 	}
-	// 报价：perch g2 782g 鲜鱼 = round(0.1176/28 × 782 × 100 × 每日系数)
-	e := &store.KeepnetEntry{Species: "perch", Cat: 2, WeightG: 782, TS: now}
-	wantPerch := int64(math.Max(1, math.Round(0.1176/28.0*782*100*dailyMarketFactor("perch", now))))
-	if got := marketPriceCents(e, now); got != wantPerch {
-		t.Errorf("perch g2 782g 报价 = %d want %d", got, wantPerch)
+
+	// 报价 = 档位每公斤银价 × 重量(kg)，四舍五入到分。
+	r := loadRUPriceRules()
+	if r == nil {
+		t.Skip("价格表为空")
 	}
-	// 未标定种兜底（MARKET_RATE_FALLBACK g2=0.10/28）
+	var fishKey, mapKey string
+	for m, fishes := range r.ByMap {
+		for f, rec := range fishes {
+			if rec["2"] > 0 {
+				mapKey, fishKey = m, f
+				break
+			}
+		}
+		if fishKey != "" {
+			break
+		}
+	}
+	if fishKey == "" {
+		t.Skip("价格表缺少达标档数据")
+	}
+	const weight = int64(782)
+	e := &store.KeepnetEntry{Species: fishKey, Cat: 2, WeightG: weight, TS: now, KeepLevel: mapKey}
+	want := int64(math.Round(r.tablePricePerKg(mapKey, fishKey, 2) * float64(weight) / 1000.0 * 100.0))
+	if got := marketPriceCentsForMap(e, now, mapKey); got != want {
+		t.Errorf("%s g2 %dg 报价 = %d want %d", fishKey, weight, got, want)
+	}
+	// 同鱼同重：未达标 < 达标 < 奖杯（档位越高价越高）。
+	gradeCents := func(grade int64) int64 {
+		return marketPriceCentsForMap(&store.KeepnetEntry{
+			Species: fishKey, Cat: grade, WeightG: weight, TS: now, KeepLevel: mapKey}, now, mapKey)
+	}
+	if !(gradeCents(1) < gradeCents(2) && gradeCents(2) < gradeCents(3)) {
+		t.Errorf("档位价应满足 未达标<达标<奖杯: %d %d %d", gradeCents(1), gradeCents(2), gradeCents(3))
+	}
+	// 未标定鱼种走 defaults_silver_per_kg 兜底。
 	e2 := &store.KeepnetEntry{Species: "no_such_fish", Cat: 2, WeightG: 100, TS: now}
-	wantFallback := int64(math.Max(1, math.Round(0.10/28.0*100*100*dailyMarketFactor("no_such_fish", now))))
+	wantFallback := int64(math.Round(ruDefaultPricePerKg(2) * 0.1 * 100.0))
 	if got := marketPriceCents(e2, now); got != wantFallback {
-		t.Errorf("未标定种兜底报价 = %d", got)
+		t.Errorf("未标定种兜底报价 = %d want %d", got, wantFallback)
 	}
-	// g1 = g2 价 ×0.45
+	// 旧的速率函数仍保留（下游兼容），g1 = g2 价 × g1MarketRatio。
 	if got := marketRatePerG("c.roach", 1); got != mathRound6(0.0990*g1MarketRatio/28.0) {
 		t.Errorf("c.roach g1 速率 = %v", got)
 	}
@@ -392,7 +421,7 @@ func TestWorkshopRepairMapAndBrandMultiplier(t *testing.T) {
 		brands  []string
 		storeID string
 		want    float64
-	}{
+	}{{
 		{name: "level_001", mapKey: "level_001_lake", want: 1.0},
 		{name: "惟有诺克河", mapKey: "level_002_kirzah_river", want: 0.85},
 		{name: "level_003", mapKey: "level_003_viiveri_lake", want: 2.0},
@@ -437,7 +466,7 @@ func TestWorkshopRepairFallbackUsesStoreMapAndBrand(t *testing.T) {
 	cases := []struct {
 		store string
 		want  int64
-	}{
+	}{{
 		{store: "workshop_viiveri", want: 300}, // level_003_viiveri_lake ×2.00
 		{store: "workshop_02", want: 128},      // 惟有诺克河 ×0.85，300×0.5×0.85=127.5→128
 		{store: "workshop_01", want: 150},      // level_001_lake ×1.00
