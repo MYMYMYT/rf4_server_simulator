@@ -74,7 +74,7 @@ func marketRateFallback(grade int64) float64 {
 var freshnessTiers = []struct {
 	cutoffHours float64
 	factor      float64
-}{
+}{{
 	{24.0, 1.0}, {48.0, 0.8}, {72.0, 0.6}, {math.Inf(1), 0.4},
 }
 
@@ -269,21 +269,13 @@ func dailyMarketFactor(species string, now float64) float64 {
 	return 0.95 + 0.10*r
 }
 
+// marketPriceCentsForMap 计算单条鱼的鱼市报价（银币分）。
+// 使用官服（RU）价格表：地图 × 鱼种 × 档位 的银币/公斤 × 重量。
 func marketPriceCentsForMap(e *store.KeepnetEntry, now float64, mapKey string) int64 {
-	w := e.WeightG
-	if w < 1 {
-		w = 1
+	if e == nil {
+		return 0
 	}
-	grade := e.Cat
-	if grade < 1 {
-		grade = 1
-	}
-	fresh := freshnessFactor(e.TS, now)
-	factor := dailyMarketFactor(e.Species, now)
-	if perKg := marketSilverPerKgOverlay(mapKey, e.Species, grade); perKg > 0 {
-		return int64(math.Max(1, math.Round(perKg*factor*(float64(w)/1000.0)*100*fresh)))
-	}
-	return int64(math.Max(1, math.Round(marketRatePerG(e.Species, grade)*factor*float64(w)*100*fresh)))
+	return ruFishPriceCents(e.Species, e.Cat, e.WeightG, mapKey, e.TS, now)
 }
 
 // marketPriceCents 在未指定地图时计算报价，地图路径应使用 marketPriceCentsForMap。
@@ -338,7 +330,7 @@ func hMarketRate(ctx *Ctx) ([]byte, bool) {
 			continue
 		}
 		flag := int64(0)
-		if isFishRotten(e.TS, now) {
+		if ruFreshnessEnabled() && isFishRotten(e.TS, now) {
 			flag = 1
 			rotten++
 		}
@@ -551,7 +543,7 @@ type repairStoreDefinition struct {
 var (
 	repairMultiplierOnce sync.Once
 	repairMapMultipliers map[string]repairMapMultiplierRecord
-	repairStoreDefs      map[string]repairStoreDefinition
+	repairStoreDefs     map[string]repairStoreDefinition
 )
 
 func loadRepairMultipliers() {
@@ -788,7 +780,7 @@ func (s *Server) repairPartsOf(ctx context.Context, it *store.Item) []repairPart
 	// 只有内部零件都还满、但本体已经掉耐久时，才补一行本体修理入口；
 	// 否则会和整机保养重复报价，也会把正常的零件修理界面挤乱。
 	if !hasWornPart {
-		if def, derr := s.DB.GetItemDefByItemID(ctx, it.ItemID); derr == nil && def != nil &&
+		if def, derr := s.DB.GetItemDefByItemID(ctx, it); derr == nil && def != nil &&
 			def.Category == gearCatReel && it.Durability < 1 {
 			add(it.GUID, uint32(it.NumericID), uint32(gearCatReel), it.Durability)
 		}
@@ -823,7 +815,7 @@ var partBasePrice = map[int64][2]int64{
 	8:  {900, 9},   // 线杯
 	9:  {754, 7},   // 摩擦片
 	10: {50, 1},    // 轮油
-	34: {300, 3},   // 摇把
+	34: {300, 3},   // 摇柄
 	36: {1200, 12}, // 竿坯
 	52: {296, 5},   // 齿轮
 }
@@ -1230,7 +1222,7 @@ func (s *Server) buildPartInstance(ctx context.Context, host *store.Item, sysID,
 // 若改成 typed_u32arr（0x07 带类型名）会解码成 kkeibjcmjnl，
 // 客户端强转 oinpmjophkh[] 时抛 InvalidCastException，整行作废。
 func workshopSlots(ctx context.Context, srv *Server, guid string) []uint32 {
-	row, err := srv.DB.GetItemByGUID(ctx, guid)
+	row, err := srv.GetItemByGUID(ctx, guid)
 	if err != nil || row == nil {
 		return nil
 	}
@@ -1762,7 +1754,7 @@ func hWorkshopRepair(useGold bool) Handler {
 		}
 		if preparedPerf != nil {
 			if err := srv.DB.UpsertReelPerformanceTx(cctx, tx, *preparedPerf); err != nil {
-				ctx.Log.Warn("修理：轮子物理参数保存失败", "guid", shortGUID(row.GUID), "err", err)
+				ctx.Log.Warn("修理：轮子物理参数保存失败", "guid", shortGUID(guid), "err", err)
 				return nil, false
 			}
 		}
@@ -1861,7 +1853,6 @@ func deepInts(v *proto.Value) []int64 {
 				}
 				if x.Fields[i].Val != nil {
 					walk(x.Fields[i].Val)
-				}
 			}
 		}
 	}
@@ -2022,7 +2013,7 @@ func (s *Server) ownedRodRow(ctx context.Context, uid int64, rodGUID string) *st
 // setOwnedRodSetting 校验竿实例属于 uid 后，持久化竿设置并尽力回写 f5 的第 fieldIdx 个字段。
 // 返回 false 表示竿不存在或不属于该玩家，此时不产生任何写入。
 func (s *Server) setOwnedRodSetting(ctx context.Context, uid int64, rodGUID, key string, value int64, fieldIdx int) bool {
-	row := s.ownedRodRow(ctx, uid, rodGUID)
+	row := s.ownedRodRow(ctx, rodGUID)
 	if row == nil {
 		return false
 	}
@@ -2043,7 +2034,7 @@ func (s *Server) rodRigSetField(ctx context.Context, row *store.Item, fieldIdx i
 	}
 	stored := fields[idx].Val
 	if stored == nil || stored.Kind != proto.KindObj || len(stored.Fields) <= fieldIdx {
-		return false
+		return nil, false
 	}
 	clone := *stored
 	clone.Fields = append([]proto.Field(nil), stored.Fields...)
