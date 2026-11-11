@@ -124,7 +124,7 @@ func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64
 	key := fmt.Sprintf("catch-settlement:%d:%s", uid, strings.ToLower(f.FishGUID))
 	decodeReceipt := func(raw string) (*settleXpResult, error) {
 		var saved catchReceipt
-		if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		if err := json.Unmarshal([]byte(raw), err != nil {
 			return nil, err
 		}
 		return saved.result(true), nil
@@ -137,7 +137,8 @@ func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64
 	if _, err := s.DB.EnsureProfile(ctx, uid); err != nil {
 		return nil, err
 	}
-	xp, silver := catchValue(f.Species, f.Grade, f.WeightG)
+	xp, _ := catchValue(f.Species, f.Grade, f.WeightG)
+	silver := ruCatchSilver(f.Species, f.Grade, f.WeightG, f.LocLevel, 0)
 	xp = int64(math.Round(float64(xp) * s.tunableF("xp_gain", 1)))
 	if xp < 1 {
 		xp = 1
@@ -208,12 +209,12 @@ func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64
 	}
 	for _, bonus := range bonuses {
 		if bonus.XP > math.MaxInt64-totalXP {
-			return nil, fmt.Errorf("钓获经验超出范围")
+			return fmt.Errorf("钓获经验超出范围")
 		}
 		totalXP += bonus.XP
 	}
 	if oldXP > math.MaxInt64-totalXP {
-		return nil, fmt.Errorf("累计经验超出范围")
+		return fmt.Errorf("累计经验超出范围")
 	}
 	newXP := oldXP + totalXP
 	level := levelForXp(newXP)

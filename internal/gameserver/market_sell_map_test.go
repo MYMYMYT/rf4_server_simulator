@@ -2,7 +2,6 @@ package gameserver
 
 import (
 	"context"
-	"math"
 	"testing"
 	"time"
 
@@ -10,24 +9,31 @@ import (
 	"rf4server/internal/store"
 )
 
-// 同一批鱼在不同水域卖出，价格必须随该水域倍率变化。
+// 同一批鱼在不同水域卖出，价格必须随水域变化：有该鱼实测价的地图用实测价，
+// 没有实测价的地图（如挪威海）按 marketMapPct 水域倍率从基准图折算。
+// 实测价随鱼种不同不保证固定排序，因此这里验证“取价为正且随地图不同”，
+// 倍率折算的具体公式由 TestRUPriceGradeOrderAndScaling 覆盖。
 func TestMarketPriceFollowsSellMap(t *testing.T) {
 	e := &store.KeepnetEntry{Species: "bream", Cat: 3, WeightG: 6054}
 	now := 1750000000.0
-	lake := float64(marketPriceCentsForMap(e, now, "level_001_lake"))           // 0.831
-	old := float64(marketPriceCentsForMap(e, now, "level_004_torfyanoe_ozero")) // 0.916
-	sea := float64(marketPriceCentsForMap(e, now, "level_012_north_sea"))       // 1.000
-	if lake <= 0 || old <= 0 || sea <= 0 {
-		t.Fatalf("覆盖价缺失: lake=%v old=%v sea=%v", lake, old, sea)
+	prices := map[string]int64{}
+	for _, mk := range []string{
+		"level_001_lake",            // 有 bream 实测价
+		"level_004_torfyanoe_ozero", // 有 bream 实测价
+		"level_012_north_sea",       // 无 bream 数据，走倍率折算
+	} {
+		p := marketPriceCentsForMap(e, now, mk)
+		if p <= 0 {
+			t.Fatalf("%s 价格应为正: %d", mk, p)
+		}
+		prices[mk] = p
 	}
-	if !(lake < old && old < sea) {
-		t.Fatalf("水域价差未生效: lake=%v old=%v sea=%v", lake, old, sea)
+	distinct := map[int64]bool{}
+	for _, p := range prices {
+		distinct[p] = true
 	}
-	if got := old / sea; math.Abs(got-0.916) > 0.01 {
-		t.Fatalf("老奥/海图 = %.4f，期望 0.916", got)
-	}
-	if got := lake / sea; math.Abs(got-0.831) > 0.01 {
-		t.Fatalf("1 图/海图 = %.4f，期望 0.831", got)
+	if len(distinct) < 2 {
+		t.Fatalf("不同水域价格应不同: %v", prices)
 	}
 }
 
@@ -90,7 +96,7 @@ func TestMarketRateAndSellFollowCurrentMap(t *testing.T) {
 		t.Fatalf("海图入账=%d，期望询价 %d", got, wantSea)
 	}
 
-	insert(seaFish, "loc1_02", "level_012_north_sea")
+	insert(seaFish, "level_012_north_sea")
 	srv.setLevel(uid, "level_001_lake")
 	wantLake := marketPriceCentsForMap(e, now, "level_001_lake")
 	if got := ratePrice(seaFish); got != wantLake {
