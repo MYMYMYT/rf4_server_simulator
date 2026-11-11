@@ -264,14 +264,8 @@ func (s *Server) settleStatics(ctx context.Context, species string) [6]int64 {
 func (s *Server) buildSettle813(ctx context.Context, uid int64, f *RolledFish, r *settleXpResult) *proto.Value {
 	statics := s.settleStatics(ctx, f.Species)
 	f4 := int64(float64(statics[4]) * (0.9 + rand.Float64()*0.2)) // 向下取整
-	// 813.f7 是该鱼银价（分），由单位重量价格计算。
-	_, silverRate := 0.4, 0.0
-	if rate, ok := valueRates[vgKey{f.Species, f.Grade}]; ok {
-		silverRate = rate[1]
-	} else if f.Grade >= 2 {
-		silverRate = 0.1
-	}
-	silverCents := int64(math.Round(silverRate * math.Max(1, float64(f.WeightG))))
+	// 813.f7 是该鱼银价（分），按官服鱼市价格表计算。
+	silverCents := ruFishPriceCents(f.Species, f.Grade, f.WeightG, f.LocLevel, 0, float64(time.Now().Unix()))
 
 	// 310 经验块：f0=总经验，f1=升级数，f2=钓法大类，f3=熟练度增量，f6=加成分解。
 	// 重放回执只还原事实，不能再次触发熟练度提示；满级后尤其会误弹旧的 +0.x = 100%。
