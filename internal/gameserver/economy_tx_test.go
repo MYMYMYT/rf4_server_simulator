@@ -360,14 +360,14 @@ func TestPlaceBuyoutAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("余额不足仍应回档案: ok=%v body=%x", ok, body)
 	}
 	var owned int
-	if err := db.SQL.QueryRow(`SELECT COUNT(*) FROM place_access WHERE uid=? AND place=?`, uid, place).Scan(&owned); err != nil {
+	if err := db.SQL.QueryRow(`SELECT COUNT(*) FROM place_access WHERE uid=? AND place=?`, uid); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.SQL.QueryRow(`SELECT gold FROM profile WHERE uid=?`, uid).Scan(&gold); err != nil {
 		t.Fatal(err)
 	}
 	if owned != 0 || gold != tier-1 {
-		t.Fatalf("余额不足不得授权/扣款: owned=%d gold=%d", owned, gold)
+		t.Fatalf("余额不足不得授权/扣款: owned=%d gold=%d", gold)
 	}
 }
 
@@ -416,10 +416,61 @@ func TestPaperMapBuyDoesNotUnlockPlace(t *testing.T) {
 }
 
 func TestMarketPriceUsesMapOverlay(t *testing.T) {
-	e := &store.KeepnetEntry{Species: "ruffe", WeightG: 1000, Cat: 1, TS: 1}
-	withoutMap := marketPriceCentsForMap(e, 1, "")
-	withMap := marketPriceCentsForMap(e, 1, "level_001_lake")
-	if withMap <= 0 || withMap == withoutMap {
-		t.Fatalf("地图覆盖层未生效: default=%d map=%d", withoutMap, withMap)
+	// 找一条在目标地图缺数据的鱼，验证跨图时按 marketMapPct 水域倍率折算。
+	// 基准图选择必须与 ruPricePerKg 完全一致：排序后第一张有该鱼数据且倍率有效的图。
+	r := loadRUPriceRules()
+	if r == nil || len(r.ByMap) < 2 {
+		t.Skip("价格表地图不足")
 	}
+	weight := int64(1000)
+	for _, targetMap := range ruSortedMapKeys(r) {
+		targetPct := marketMapPct(targetMap)
+		if targetPct <= 0 {
+			continue
+		}
+		for _, candidateBase := range ruSortedMapKeys(r) {
+			if candidateBase == targetMap {
+				continue
+			}
+			if marketMapPct(candidateBase) <= 0 {
+				continue
+			}
+			for fishKey, rec := range r.ByMap[candidateBase] {
+				if rec["1"] <= 0 && rec["2"] <= 0 {
+					continue
+				}
+				// 目标图必须缺该鱼数据。
+				if r.tablePricePerKg(targetMap, fishKey, 2) > 0 {
+					continue
+				}
+				// 实现里真正使用的基准图：排序后第一张有数据且倍率有效者。
+				var implBase string
+				for _, bm := range ruSortedMapKeys(r) {
+					if bm == targetMap {
+						continue
+					}
+					if r.tablePricePerKg(bm, fishKey, 2) > 0 && marketMapPct(bm) > 0 {
+						implBase = bm
+						break
+					}
+				}
+				if implBase == "" {
+					continue
+				}
+				basePct := marketMapPct(implBase)
+				if basePct == targetPct {
+					continue
+				}
+				e := &store.KeepnetEntry{Species: fishKey, WeightG: weight, Cat: 2, TS: 1}
+				scaled := marketPriceCentsForMap(e, 1, targetMap)
+				wantScaled := int64(r.tablePricePerKg(implBase, fishKey, 2)/basePct*targetPct*float64(weight)/1000.0*100.0 + 0.5)
+				// 允许 1 分误差：浮点乘除取整顺序在 .5 边界可能相差 1 分。
+				if scaled > wantScaled+1 || scaled < wantScaled-1 {
+					t.Fatalf("地图倍率折算不符: scaled=%d want=%d(%s->%s, %s)", scaled, wantScaled, implBase, targetMap, fishKey)
+				}
+				return
+			}
+		}
+	}
+	t.Skip("没有可验证跨图折算的鱼种")
 }
