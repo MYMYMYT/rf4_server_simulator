@@ -95,7 +95,8 @@ func (s *Server) fishingEnd(ctx *Ctx) ([]byte, bool) {
 	if hasFish {
 		s.recordHuntCatch(cctx, uid, loc, spot, pending)
 		// 14/4 只结算经验；银币由鱼市 20/2 卖鱼入账。
-		xp, silver := catchValue(pending.Species, pending.Grade, pending.WeightG)
+		xp, _ := catchValue(pending.Species, pending.Grade, pending.WeightG)
+		silver := ruCatchSilver(pending.Species, pending.Grade, pending.WeightG, pending.LocLevel, 0)
 		bonusXp := s.tunableF("xp_gain", 1.0)
 		xp = int64(math.Round(float64(xp) * bonusXp))
 		prevBest, _ := s.DB.CatchLogMaxWeight(cctx, uid, pending.Species)
@@ -168,14 +169,8 @@ func (s *Server) build813(ctx context.Context, uid int64, f *RolledFish, prevBes
 	st := s.settleStatics(ctx, f.Species)
 	f0, f1, f2, f3, f5 := float64(st[0]), float64(st[1]), float64(st[2]), float64(st[3]), float64(st[5])
 	f4 := f3 * (0.9 + rand.Float64()*0.2)
-	// 银价（分）= round(silverRate × max(1,w))，用未除数速率
-	_, silverRate := 0.4, 0.0
-	if rate, ok := valueRates[vgKey{f.Species, f.Grade}]; ok {
-		silverRate = rate[1]
-	} else if f.Grade >= 2 {
-		silverRate = 0.1
-	}
-	silverCents := int64(math.Round(silverRate * math.Max(1, float64(f.WeightG))))
+	// 银价（分）按官服鱼市价格表计算（地图 × 鱼种 × 档位 × 重量）。
+	silverCents := ruFishPriceCents(f.Species, f.Grade, f.WeightG, f.LocLevel, 0, float64(time.Now().Unix()))
 
 	obj310 := wiregen.MustMakeObj("kegeppimjbm", map[int]*proto.Value{
 		0: proto.U64(uint64(f.XP)), // 单鱼经验（不是累计）
@@ -309,7 +304,7 @@ func (s *Server) fishingKeep(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 		s.notifyFishKept(ctx.Sess, &kept)
 		// 稀有鱼 / 超级稀有鱼鱼种数奖座：入护才计入图鉴（catch_log 刚落库），
-		// 放生不计——与 3/17 图鉴、307.f16 星号同一口径。奖座推 4/22 并播报。
+		// 放生不计——与 307.f16 星号、3/17 图鉴、307.16 星号同一口径。奖座推 4/22 并播报。
 		if keptInNet {
 			if gifts := s.rarityMilestoneAfterKeep(cctx, uid); len(gifts) > 0 {
 				pushRarityStatuettesOnKeep(ctx.Sess, gifts)
@@ -461,7 +456,7 @@ func (s *Server) fishingRelease(ctx *Ctx) ([]byte, bool) {
 		}
 		if !replayed {
 			// 放生同样在结算卡之后落 catch_log，补推新档案刷新等级旁星号
-			// （与 14/5 入护路径同一时机）；与放生经验是否为 0 无关。
+			// （与 14/4 路径同一时机）；与放生经验是否为 0 无关。
 			ctx.Sess.Push2_1()
 		}
 		if !replayed && result.Bonus > 0 {
