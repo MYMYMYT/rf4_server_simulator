@@ -1669,10 +1669,7 @@ func buildKeepnet25(e *store.KeepnetEntry, levelKey string, rarity int64, modelK
 	}
 	// 游戏时刻 600：gameSec=(u-1438387200)*24
 	day, hour, minute := gameClockOf(e.TS)
-	var state uint32
-	if grade >= 4 && e.NameZh == "" {
-		state |= 4194304 // 蓝冠未命名可命名位
-	}
+	state := keepnetStateBits(grade, e.NameZh, rarity)
 	if modelKey == "" {
 		modelKey = e.ModelVariant
 	}
