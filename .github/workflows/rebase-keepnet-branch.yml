@@ -1,0 +1,36 @@
+name: rebase-keepnet-branch
+on:
+  push:
+    branches: [fix/keepnet-rare-state-bit]
+permissions:
+  contents: write
+jobs:
+  rebase:
+    if: github.repository == 'MYMYMYT/rf4_server_simulator'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/keepnet-rare-state-bit
+          fetch-depth: 0
+      - name: Rebase onto upstream main and reapply patch
+        run: |
+          set -e
+          old=$(git rev-parse HEAD)
+          git fetch https://github.com/OpenFisherCommunity/rf4_server_simulator.git main
+          git reset --hard FETCH_HEAD
+          git checkout "$old" -- internal/gameserver/native_inventory.go internal/gameserver/keepnet_state.go internal/gameserver/keepnet_rarity_test.go specs/changes/keepnet-rare-state-bit/spec.md
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path('internal/gameserver/handlers_game.go')
+          s = p.read_text(encoding='utf-8')
+          old = '\tvar state uint32\n\tif grade >= 4 && e.NameZh == "" {\n\t\tstate |= 4194304 // 蓝冠未命名可命名位\n\t}\n'
+          new = '\tstate := keepnetStateBits(grade, e.NameZh, rarity)\n'
+          assert s.count(old) == 1, 'pattern count=%d' % s.count(old)
+          p.write_text(s.replace(old, new), encoding='utf-8')
+          PY
+          git config user.name "rf4-bot"
+          git config user.email "rf4-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(gameserver): 鱼市稀有鱼卡补 25.f24 稀有位（紫色稀有标）"
+          git push --force origin HEAD:fix/keepnet-rare-state-bit
