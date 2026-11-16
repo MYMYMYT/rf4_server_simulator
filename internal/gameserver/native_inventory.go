@@ -28,7 +28,7 @@ func nativeInventoryContainers(kind uint64) []string {
 }
 
 // 导入快照保留渔获资料，容器和版本以当前护网为准。
-// 物种稀有度（f4）始终以静态表为准——旧快照可能缺失或为 0。
+// 物种稀有度（f4/f24 稀有位）始终以静态表为准——旧快照可能缺失或为 0。
 func (s *Server) keepnetItemTree(ctx context.Context, entry *store.KeepnetEntry, level string) *proto.Value {
 	rarity := s.DB.SpeciesRarity(ctx, entry.Species)
 	s.fillKeepnetVariant(entry)
@@ -36,6 +36,18 @@ func (s *Server) keepnetItemTree(ctx context.Context, entry *store.KeepnetEntry,
 	if err == nil && row.UID == entry.UID && row.Container == "keepnet" && row.TypeID == 25 && row.WireClass == "ecknbkpeeji" {
 		if fields, err := FieldsFromJSON(row.FieldsJSON); err == nil && len(fields) == 29 {
 			fields[4].Num = ptrU64(uint64(rarity))
+			// 25.f24 的稀有位同样以静态表为准：旧快照没有这一位，
+			// 普通鱼快照也可能残留错误稀有位，两条都要覆盖。
+			state := uint64(0)
+			if fields[24].Num != nil {
+				state = *fields[24].Num
+			}
+			if rarity > 0 {
+				state |= uint64(keepnetStateRare)
+			} else {
+				state &^= uint64(keepnetStateRare)
+			}
+			fields[24].Num = ptrU64(state)
 			fields[16].Hex = entry.EchoGUID
 			fields[18].Num = ptrU64(containerKeepnet)
 			fields[22].Num = ptrU64(uint64(netTicksNow()))
